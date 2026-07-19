@@ -1,0 +1,1024 @@
+import 'dart:async';
+import 'dart:math' as math;
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
+import 'package:intl/date_symbol_data_local.dart';
+
+// ========================================================
+// 🔑 API Configuration
+// ========================================================
+// ⚠️ لا تضع مفاتيح API حقيقية داخل الكود المصدري مباشرة، خصوصاً
+// إذا كنت ستُلصق هذا الكود في DartPad (وهو علني بطبيعته) أو ترفعه
+// إلى GitHub. أي شخص يرى الكود سيرى المفتاح. اترك القيمة فارغة هنا
+// وأدخل مفتاحك محلياً فقط عند التجربة، ولا تشارك الكود بعد ذلك.
+const String apiKey = 'sk_kiGp7ZrzASG7rj2aUz7h7jNpbRV8tMlp'; // ضع مفتاحك هنا محلياً فقط، لا تشاركه
+const String referrer = 'image_generate';
+const String baseUrl = 'https://image.pollinations.ai/prompt/';
+
+// ========================================================
+// 🌐 Translation (Arabic/English)
+// ========================================================
+const Map<String, List<String>> dict = {
+  'app_title': ['مُولِّد الصور', 'Image Generator'],
+  'prompt': ['الوصف', 'Prompt'],
+  'generate': ['توليد', 'Generate'],
+  'model': ['النموذج', 'Model'],
+  'style': ['النمط', 'Style'],
+  'shape': ['الشكل', 'Shape'],
+  'count': ['العدد', 'Count'],
+  'mosaic': ['موزاييك', 'Mosaic'],
+  'history': ['التاريخ', 'History'],
+  'settings': ['الإعدادات', 'Settings'],
+  'no_images': ['لا توجد صور', 'No images'],
+  'loading': ['جاري التوليد...', 'Generating...'],
+  'error': ['حدث خطأ', 'Error'],
+  'negative': ['كلمات ممنوعة', 'Negative Prompt'],
+  'save': ['حفظ', 'Save'],
+  'reset': ['إعادة ضبط', 'Reset'],
+  'clear_history': ['مسح السجل', 'Clear History'],
+  'copied': ['تم النسخ', 'Copied'],
+  'select_model': ['اختر النموذج', 'Select Model'],
+  'select_style': ['اختر النمط', 'Select Style'],
+  'select_shape': ['اختر الشكل', 'Select Shape'],
+  'square': ['مربع', 'Square'],
+  'landscape': ['أفقي', 'Landscape'],
+  'portrait': ['رأسي', 'Portrait'],
+  'mosaic_tiles': ['عدد القطع', 'Number of Tiles'],
+  'generate_mosaic': ['توليد موزاييك', 'Generate Mosaic'],
+  'generated_at': ['تم التوليد في', 'Generated at'],
+  'dimensions': ['الأبعاد', 'Dimensions'],
+  'confirm': ['تأكيد', 'Confirm'],
+  'cancel': ['إلغاء', 'Cancel'],
+  'are_you_sure': ['هل أنت متأكد؟', 'Are you sure?'],
+  'close': ['إغلاق', 'Close'],
+};
+
+String tr(BuildContext ctx, String key) {
+  final isAr = ctx.watch<AppState>().isArabic;
+  return dict[key]![isAr ? 0 : 1];
+}
+
+// ========================================================
+// 🧠 Available Models & Styles
+// ========================================================
+const Map<String, String> availableModels = {
+  'flux': 'Flux (جودة عالية)',
+  'turbo': 'Turbo (سريع)',
+  'flux-realism': 'Flux Realism (واقعي)',
+  'flux-anime': 'Flux Anime (أنمي)',
+  'flux-3d': 'Flux 3D',
+};
+
+const Map<String, String> availableStyles = {
+  'none': 'بدون نمط',
+  'realistic': 'واقعي',
+  'anime': 'أنمي',
+  'oil-painting': 'زيتي',
+  'watercolor': 'مائي',
+  'cinematic': 'سينمائي',
+};
+
+const List<String> shapes = ['square', 'landscape', 'portrait'];
+const Map<String, List<int>> shapeDimensions = {
+  'square': [1024, 1024],
+  'landscape': [1536, 1024],
+  'portrait': [1024, 1536],
+};
+
+// ========================================================
+// 📦 App State
+// ========================================================
+class AppState extends ChangeNotifier {
+  bool isArabic = true;
+
+  String prompt = 'a beautiful landscape, highly detailed';
+  String model = 'flux';
+  String style = 'none';
+  String shape = 'square';
+  int imageCount = 1;
+  String negativePrompt = 'nudity, text, watermark, blurry, low quality';
+
+  final List<GeneratedImage> history = [];
+
+  int mosaicTiles = 4;
+
+  bool isLoading = false;
+  String? lastError;
+
+  void toggleLanguage() {
+    isArabic = !isArabic;
+    notifyListeners();
+  }
+
+  void setPrompt(String p) {
+    prompt = p;
+  }
+
+  void setModel(String m) {
+    model = m;
+    notifyListeners();
+  }
+
+  void setStyle(String s) {
+    style = s;
+    notifyListeners();
+  }
+
+  void setShape(String s) {
+    shape = s;
+    notifyListeners();
+  }
+
+  void setImageCount(int c) {
+    imageCount = c.clamp(1, 5);
+    notifyListeners();
+  }
+
+  void setNegativePrompt(String np) {
+    negativePrompt = np;
+  }
+
+  void setMosaicTiles(int t) {
+    mosaicTiles = t;
+    notifyListeners();
+  }
+
+  void addHistory(GeneratedImage img) {
+    history.insert(0, img);
+    notifyListeners();
+  }
+
+  void clearHistory() {
+    history.clear();
+    notifyListeners();
+  }
+
+  void setLoading(bool loading) {
+    isLoading = loading;
+    if (loading) lastError = null;
+    notifyListeners();
+  }
+
+  void setError(String error) {
+    lastError = error;
+    isLoading = false;
+    notifyListeners();
+  }
+
+  void resetSettings() {
+    prompt = 'a beautiful landscape, highly detailed';
+    model = 'flux';
+    style = 'none';
+    shape = 'square';
+    imageCount = 1;
+    negativePrompt = 'nudity, text, watermark, blurry, low quality';
+    notifyListeners();
+  }
+}
+
+// ========================================================
+// 🖼️ Generated Image Model
+// ========================================================
+class GeneratedImage {
+  final Uint8List bytes;
+  final String prompt;
+  final String model;
+  final String style;
+  final String shape;
+  final DateTime timestamp;
+  final int width;
+  final int height;
+
+  GeneratedImage({
+    required this.bytes,
+    required this.prompt,
+    required this.model,
+    required this.style,
+    required this.shape,
+    required this.timestamp,
+    required this.width,
+    required this.height,
+  });
+
+  String get dimensions => '${width}x$height';
+}
+
+// ========================================================
+// 🌐 Pollinations API Service
+// ========================================================
+class PollinationsService {
+  final String _apiKey;
+  final String _referrer;
+
+  PollinationsService({String? apiKey, String? referrer})
+      : _apiKey = apiKey ?? '',
+        _referrer = referrer ?? 'flutter-app';
+
+  Future<Uint8List> generateImage({
+    required String prompt,
+    String model = 'flux',
+    String style = 'none',
+    int width = 1024,
+    int height = 1024,
+    String negativePrompt = '',
+    int? seed,
+  }) async {
+    String fullPrompt = prompt.trim();
+    if (style.isNotEmpty && style != 'none') {
+      final styleName = availableStyles[style] ?? style;
+      fullPrompt = '$fullPrompt, $styleName style';
+    }
+    fullPrompt = '$fullPrompt, highly detailed, sharp focus, high quality';
+    if (negativePrompt.isNotEmpty) {
+      fullPrompt = '$fullPrompt, avoid: $negativePrompt';
+    }
+
+    final encodedPrompt = Uri.encodeComponent(fullPrompt);
+    var url = Uri.parse('$baseUrl$encodedPrompt');
+    final params = <String, String>{
+      'width': width.toString(),
+      'height': height.toString(),
+      'model': model,
+      'enhance': 'true',
+      'nologo': 'true',
+      'referrer': _referrer,
+      if (seed != null) 'seed': seed.toString(),
+    };
+    url = url.replace(queryParameters: params);
+
+    final headers = <String, String>{
+      'Accept': 'image/*',
+      if (_apiKey.isNotEmpty) 'Authorization': 'Bearer $_apiKey',
+    };
+
+    final response = await http.get(url, headers: headers).timeout(
+          const Duration(seconds: 120),
+          onTimeout: () => throw TimeoutException('انتهت مهلة الطلب / Request timed out'),
+        );
+
+    final contentType = response.headers['content-type'] ?? '';
+    if (response.statusCode == 200 &&
+        response.bodyBytes.length > 1024 &&
+        contentType.contains('image')) {
+      return response.bodyBytes;
+    }
+    throw Exception('فشل التوليد (HTTP ${response.statusCode})');
+  }
+
+  static Future<Size> getImageSize(Uint8List bytes) async {
+    final codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    final size = Size(
+      frame.image.width.toDouble(),
+      frame.image.height.toDouble(),
+    );
+    frame.image.dispose();
+    return size;
+  }
+}
+
+/// ينفذ مجموعة من المهام مع حد أقصى لعدد الطلبات المتزامنة
+/// (بدلاً من إرسالها كلها دفعة واحدة أو تسلسلياً واحدة تلو الأخرى).
+Future<List<T>> runWithConcurrencyLimit<T>(
+  List<Future<T> Function()> tasks, {
+  int limit = 3,
+}) async {
+  final results = List<T?>.filled(tasks.length, null);
+  int nextIndex = 0;
+
+  Future<void> worker() async {
+    while (true) {
+      final i = nextIndex;
+      if (i >= tasks.length) return;
+      nextIndex++;
+      results[i] = await tasks[i]();
+    }
+  }
+
+  final workers = List.generate(
+    math.min(limit, tasks.length),
+    (_) => worker(),
+  );
+  await Future.wait(workers);
+  return results.cast<T>();
+}
+
+// ========================================================
+// 🧩 Mosaic Generator
+// ========================================================
+int _gridColumns(int count) => math.sqrt(count).ceil();
+
+Future<Uint8List> combineImages(List<Uint8List> images, int columns) async {
+  if (images.isEmpty) throw Exception('لا توجد صور لدمجها');
+  final rows = (images.length / columns).ceil();
+
+  final decoded = <ui.Image>[];
+  try {
+    for (final bytes in images) {
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      decoded.add(frame.image);
+    }
+
+    const tileSize = 1024;
+    final canvasWidth = columns * tileSize;
+    final canvasHeight = rows * tileSize;
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final paint = Paint()..filterQuality = FilterQuality.high;
+
+    for (int i = 0; i < decoded.length; i++) {
+      final img = decoded[i];
+      final x = (i % columns) * tileSize;
+      final y = (i ~/ columns) * tileSize;
+      canvas.drawImageRect(
+        img,
+        Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+        Rect.fromLTWH(
+          x.toDouble(),
+          y.toDouble(),
+          tileSize.toDouble(),
+          tileSize.toDouble(),
+        ),
+        paint,
+      );
+    }
+
+    final picture = recorder.endRecording();
+    final combined = await picture.toImage(canvasWidth, canvasHeight);
+    try {
+      final byteData =
+          await combined.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) throw Exception('فشل ترميز صورة الموزاييك');
+      return byteData.buffer.asUint8List();
+    } finally {
+      combined.dispose();
+    }
+  } finally {
+    // تجنب تسريب الذاكرة: تحرير كل الصور المفكوكة بعد الاستخدام
+    for (final img in decoded) {
+      img.dispose();
+    }
+  }
+}
+
+/// يقتصّ رسالة الخطأ بأمان دون التسبب بخطأ RangeError
+/// إذا كانت الرسالة أقصر من الطول المطلوب.
+String truncate(String text, int maxLen) {
+  if (text.length <= maxLen) return text;
+  return '${text.substring(0, maxLen)}...';
+}
+
+// ========================================================
+// 🏠 Main App
+// ========================================================
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await initializeDateFormatting();
+  runApp(
+    ChangeNotifierProvider(
+      create: (_) => AppState(),
+      child: const MyApp(),
+    ),
+  );
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext ctx) {
+    final state = ctx.watch<AppState>();
+    return MaterialApp(
+      title: 'Image Generator',
+      debugShowCheckedModeBanner: false,
+      // ملاحظة: DartPad لا يدعم حزمة flutter_localizations، لذلك لا يمكن
+      // استخدام Locale('ar') مع localizationsDelegates الرسمية (نصوص
+      // الأزرار الجاهزة مثل OK/Cancel في بعض الويدجتس الجاهزة ستبقى
+      // إنجليزية دائماً). بدلاً من ذلك، نتحكم يدوياً في اتجاه الواجهة
+      // (RTL/LTR) عبر Directionality هنا، وكل نصوص التطبيق نفسها
+      // (dict) مترجمة بالفعل يدوياً في الأعلى.
+      builder: (context, child) {
+        return Directionality(
+          textDirection:
+              state.isArabic ? ui.TextDirection.rtl : ui.TextDirection.ltr,
+          child: child!,
+        );
+      },
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.teal,
+          brightness: Brightness.light,
+        ),
+      ),
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.teal,
+          brightness: Brightness.dark,
+        ),
+      ),
+      themeMode: ThemeMode.system,
+      home: const MainScreen(),
+    );
+  }
+}
+
+// ========================================================
+// 📱 Main Screen
+// ========================================================
+class MainScreen extends StatefulWidget {
+  const MainScreen({super.key});
+
+  @override
+  State<MainScreen> createState() => _MainScreenState();
+}
+
+class _MainScreenState extends State<MainScreen> {
+  int _selectedIndex = 0;
+
+  static const List<Widget> _pages = [
+    GeneratePage(),
+    HistoryPage(),
+    SettingsPage(),
+  ];
+
+  @override
+  Widget build(BuildContext ctx) {
+    return Scaffold(
+      body: IndexedStack(index: _selectedIndex, children: _pages),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _selectedIndex,
+        onDestinationSelected: (index) {
+          setState(() => _selectedIndex = index);
+        },
+        destinations: [
+          NavigationDestination(
+            icon: const Icon(Icons.image),
+            label: tr(ctx, 'generate'),
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.history),
+            label: tr(ctx, 'history'),
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.settings),
+            label: tr(ctx, 'settings'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ========================================================
+// 🖼️ Generate Page
+// ========================================================
+class GeneratePage extends StatefulWidget {
+  const GeneratePage({super.key});
+
+  @override
+  State<GeneratePage> createState() => _GeneratePageState();
+}
+
+class _GeneratePageState extends State<GeneratePage> {
+  final _promptController = TextEditingController();
+  final _negativeController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    final state = context.read<AppState>();
+    _promptController.text = state.prompt;
+    _negativeController.text = state.negativePrompt;
+    _promptController.addListener(() {
+      context.read<AppState>().setPrompt(_promptController.text);
+    });
+    _negativeController.addListener(() {
+      context.read<AppState>().setNegativePrompt(_negativeController.text);
+    });
+  }
+
+  @override
+  void dispose() {
+    _promptController.dispose();
+    _negativeController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _generateImages(BuildContext ctx, {bool isMosaic = false}) async {
+    final state = ctx.read<AppState>();
+    final prompt = _promptController.text.trim();
+    if (prompt.isEmpty) {
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        SnackBar(content: Text('${tr(ctx, 'prompt')} ${tr(ctx, 'error')}')),
+      );
+      return;
+    }
+
+    state.setLoading(true);
+    final service = PollinationsService(apiKey: apiKey, referrer: referrer);
+    final dims = shapeDimensions[state.shape]!;
+    final width = dims[0];
+    final height = dims[1];
+    final count = isMosaic ? state.mosaicTiles : state.imageCount;
+    final negative = _negativeController.text.trim();
+    final baseSeed = DateTime.now().millisecondsSinceEpoch % 1000000;
+
+    try {
+      // 🚀 الطلبات تُرسل بشكل متزامن (بحد أقصى 3 في نفس الوقت) بدلاً من
+      // تسلسلي واحدة تلو الأخرى، مما يسرّع التوليد بشكل ملحوظ خصوصاً
+      // في وضع الموزاييك (عدة صور دفعة واحدة).
+      final tasks = List.generate(
+        count,
+        (i) => () => service.generateImage(
+              prompt: prompt,
+              model: state.model,
+              style: state.style,
+              width: width,
+              height: height,
+              negativePrompt: negative,
+              seed: baseSeed + i,
+            ),
+      );
+      final imageBytes = await runWithConcurrencyLimit(tasks, limit: 3);
+
+      Uint8List finalBytes;
+      int finalWidth, finalHeight;
+      if (isMosaic) {
+        final cols = _gridColumns(count);
+        finalBytes = await combineImages(imageBytes, cols);
+        final rows = (count / cols).ceil();
+        finalWidth = cols * 1024;
+        finalHeight = rows * 1024;
+      } else {
+        // الأبعاد معروفة مسبقاً من الطلب نفسه، لا داعي لإعادة فك تشفير
+        // الصورة فقط لقراءة العرض/الارتفاع (كان هذا يبطئ الأداء بلا فائدة).
+        finalBytes = imageBytes.first;
+        finalWidth = width;
+        finalHeight = height;
+      }
+
+      if (!ctx.mounted) return;
+
+      final generated = GeneratedImage(
+        bytes: finalBytes,
+        prompt: prompt,
+        model: state.model,
+        style: state.style,
+        shape: state.shape,
+        timestamp: DateTime.now(),
+        width: finalWidth,
+        height: finalHeight,
+      );
+      state.addHistory(generated);
+
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        SnackBar(
+          content: Text(isMosaic
+              ? '✅ ${tr(ctx, 'mosaic')} ${tr(ctx, 'generate')}'
+              : '✅ ${tr(ctx, 'generate')}'),
+        ),
+      );
+    } catch (e) {
+      state.setError(e.toString());
+      if (!ctx.mounted) return;
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        SnackBar(
+          content: Text('${tr(ctx, 'error')}: ${truncate(e.toString(), 100)}'),
+        ),
+      );
+    } finally {
+      state.setLoading(false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext ctx) {
+    final state = ctx.watch<AppState>();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(tr(ctx, 'app_title')),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.language),
+            onPressed: state.toggleLanguage,
+            tooltip: tr(ctx, 'settings'),
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _promptController,
+              decoration: InputDecoration(
+                labelText: tr(ctx, 'prompt'),
+                border: const OutlineInputBorder(),
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.clear),
+                  onPressed: () => _promptController.clear(),
+                ),
+              ),
+              maxLines: 3,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _negativeController,
+              decoration: InputDecoration(
+                labelText: tr(ctx, 'negative'),
+                border: const OutlineInputBorder(),
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.clear),
+                  onPressed: () => _negativeController.clear(),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: availableModels.entries.map((entry) {
+                final isSelected = state.model == entry.key;
+                return FilterChip(
+                  label: Text(entry.value),
+                  selected: isSelected,
+                  onSelected: (_) => state.setModel(entry.key),
+                  showCheckmark: true,
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: availableStyles.entries.map((entry) {
+                final isSelected = state.style == entry.key;
+                return FilterChip(
+                  label: Text(entry.value),
+                  selected: isSelected,
+                  onSelected: (_) => state.setStyle(entry.key),
+                  showCheckmark: true,
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Text('${tr(ctx, 'shape')}: ',
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                ...shapes.map((shape) {
+                  final isSelected = state.shape == shape;
+                  final label = tr(ctx, shape);
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      label: Text(label),
+                      selected: isSelected,
+                      onSelected: (_) => state.setShape(shape),
+                    ),
+                  );
+                }),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Text('${tr(ctx, 'count')}: ',
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                Expanded(
+                  child: Slider(
+                    value: state.imageCount.toDouble(),
+                    min: 1,
+                    max: 5,
+                    divisions: 4,
+                    label: state.imageCount.toString(),
+                    onChanged: (val) => state.setImageCount(val.round()),
+                  ),
+                ),
+                Text('${state.imageCount}'),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: state.isLoading ? null : () => _generateImages(ctx),
+                    icon: state.isLoading
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.image),
+                    label: Text(tr(ctx, 'generate')),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: state.isLoading ? null : () => _showMosaicDialog(ctx),
+                    icon: const Icon(Icons.grid_on),
+                    label: Text(tr(ctx, 'mosaic')),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            if (state.isLoading) ...[
+              const SizedBox(height: 30),
+              const Center(child: CircularProgressIndicator()),
+            ] else if (state.history.isNotEmpty) ...[
+              const Divider(),
+              Text(
+                '${tr(ctx, 'generated_at')}: ${DateFormat.yMd().add_jm().format(state.history.first.timestamp)}',
+                style: const TextStyle(fontWeight: FontWeight.w300),
+              ),
+              const SizedBox(height: 8),
+              Image.memory(
+                state.history.first.bytes,
+                width: double.infinity,
+                fit: BoxFit.contain,
+                gaplessPlayback: true,
+              ),
+              Text('${tr(ctx, 'dimensions')}: ${state.history.first.dimensions}'),
+            ] else if (state.lastError != null) ...[
+              const SizedBox(height: 30),
+              Center(
+                child: Text(
+                  '${tr(ctx, 'error')}: ${state.lastError}',
+                  style: const TextStyle(color: Colors.red),
+                ),
+              ),
+            ] else ...[
+              const SizedBox(height: 50),
+              Center(child: Text(tr(ctx, 'no_images'))),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showMosaicDialog(BuildContext ctx) {
+    final state = ctx.read<AppState>();
+    showDialog(
+      context: ctx,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setDialogState) => AlertDialog(
+          title: Text(tr(ctx, 'mosaic')),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(tr(ctx, 'mosaic_tiles')),
+              Slider(
+                value: state.mosaicTiles.toDouble(),
+                min: 2,
+                max: 9,
+                divisions: 7,
+                label: state.mosaicTiles.toString(),
+                onChanged: (val) {
+                  state.setMosaicTiles(val.round());
+                  setDialogState(() {});
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogCtx),
+              child: Text(tr(ctx, 'cancel')),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(dialogCtx);
+                _generateImages(ctx, isMosaic: true);
+              },
+              child: Text(tr(ctx, 'generate_mosaic')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ========================================================
+// 📜 History Page
+// ========================================================
+class HistoryPage extends StatelessWidget {
+  const HistoryPage({super.key});
+
+  @override
+  Widget build(BuildContext ctx) {
+    final state = ctx.watch<AppState>();
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(tr(ctx, 'history')),
+        actions: [
+          if (state.history.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.delete_sweep),
+              onPressed: () {
+                showDialog(
+                  context: ctx,
+                  builder: (dialogCtx) => AlertDialog(
+                    title: Text(tr(ctx, 'clear_history')),
+                    content: Text(tr(ctx, 'are_you_sure')),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(dialogCtx),
+                        child: Text(tr(ctx, 'cancel')),
+                      ),
+                      FilledButton(
+                        onPressed: () {
+                          state.clearHistory();
+                          Navigator.pop(dialogCtx);
+                        },
+                        style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                        child: Text(tr(ctx, 'clear_history')),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+        ],
+      ),
+      body: state.history.isEmpty
+          ? Center(child: Text(tr(ctx, 'no_images')))
+          : ListView.builder(
+              padding: const EdgeInsets.all(8),
+              itemCount: state.history.length,
+              itemBuilder: (_, i) {
+                final img = state.history[i];
+                return Card(
+                  margin: const EdgeInsets.symmetric(vertical: 6),
+                  child: ListTile(
+                    leading: SizedBox(
+                      width: 60,
+                      height: 60,
+                      child: Image.memory(
+                        img.bytes,
+                        fit: BoxFit.cover,
+                        gaplessPlayback: true,
+                      ),
+                    ),
+                    title: Text(
+                      truncate(img.prompt, 40),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      '${DateFormat.yMd().add_jm().format(img.timestamp)}  •  ${img.dimensions}',
+                    ),
+                    onTap: () {
+                      showDialog(
+                        context: ctx,
+                        builder: (dialogCtx) => AlertDialog(
+                          content: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Image.memory(img.bytes, fit: BoxFit.contain),
+                              const SizedBox(height: 8),
+                              Text(img.prompt),
+                              Text(
+                                '${img.dimensions}  •  ${DateFormat.yMd().add_jm().format(img.timestamp)}',
+                              ),
+                            ],
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(dialogCtx),
+                              child: Text(tr(ctx, 'close')),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+// ========================================================
+// ⚙️ Settings Page
+// ========================================================
+class SettingsPage extends StatelessWidget {
+  const SettingsPage({super.key});
+
+  @override
+  Widget build(BuildContext ctx) {
+    final state = ctx.watch<AppState>();
+
+    return Scaffold(
+      appBar: AppBar(title: Text(tr(ctx, 'settings'))),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.language),
+              title: Text(state.isArabic ? 'العربية' : 'English'),
+              trailing: Switch(
+                value: state.isArabic,
+                onChanged: (_) => state.toggleLanguage(),
+              ),
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.restore, color: Colors.orange),
+              title: Text(tr(ctx, 'reset')),
+              onTap: () {
+                showDialog(
+                  context: ctx,
+                  builder: (dialogCtx) => AlertDialog(
+                    title: Text(tr(ctx, 'reset')),
+                    content: Text(tr(ctx, 'are_you_sure')),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(dialogCtx),
+                        child: Text(tr(ctx, 'cancel')),
+                      ),
+                      FilledButton(
+                        onPressed: () {
+                          state.resetSettings();
+                          Navigator.pop(dialogCtx);
+                          ScaffoldMessenger.of(ctx).showSnackBar(
+                            SnackBar(content: Text('✅ ${tr(ctx, 'reset')}')),
+                          );
+                        },
+                        child: Text(tr(ctx, 'reset')),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_forever, color: Colors.red),
+              title: Text(tr(ctx, 'clear_history')),
+              onTap: () {
+                if (state.history.isEmpty) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    SnackBar(content: Text(tr(ctx, 'no_images'))),
+                  );
+                  return;
+                }
+                showDialog(
+                  context: ctx,
+                  builder: (dialogCtx) => AlertDialog(
+                    title: Text(tr(ctx, 'clear_history')),
+                    content: Text(tr(ctx, 'are_you_sure')),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(dialogCtx),
+                        child: Text(tr(ctx, 'cancel')),
+                      ),
+                      FilledButton(
+                        onPressed: () {
+                          state.clearHistory();
+                          Navigator.pop(dialogCtx);
+                          ScaffoldMessenger.of(ctx).showSnackBar(
+                            SnackBar(content: Text('✅ ${tr(ctx, 'clear_history')}')),
+                          );
+                        },
+                        style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                        child: Text(tr(ctx, 'clear_history')),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+            const Spacer(),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Center(
+                child: Text(
+                  'Powered by Pollinations.ai\nFlutter App v1.0',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
